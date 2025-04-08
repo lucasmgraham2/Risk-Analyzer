@@ -2,12 +2,12 @@ import os
 import pandas as pd
 import numpy as np
 import pickle
-from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+# Load data from CSV files and preprocess it.
 def load_data(file_path):
-    """Load stock data from CSV file."""
     df = pd.read_csv(file_path)
     df["Close"] = df["Close"].ffill()  # Forward fill missing values
     df["Daily Return"] = df["Close"].pct_change()  # Calculate daily returns
@@ -17,28 +17,31 @@ def load_data(file_path):
     df['Momentum'] = df['Close'].pct_change(20)  # 20-day momentum (percentage change)
     df['Volume MA'] = df['Volume'].rolling(window=20).mean()  # 20-day moving average of volume
     df['RSI'] = compute_rsi(df['Close'], 14)  # 14-day RSI (Relative Strength Index)
-    
+    market_return = df['Daily Return'].rolling(window=60).mean()  # Simulate market return
+    df['Beta'] = df['Daily Return'].rolling(window=60).cov(market_return) / df['Daily Return'].rolling(window=60).var()
+    df['Sharpe Ratio'] = df['Daily Return'].mean() / df['Daily Return'].std()
+    df['Drawdown'] = (df['Close'] / df['Close'].cummax()) - 1
+
     df.dropna(inplace=True)
     return df
 
+# Compute the Relative Strength Index (RSI).
 def compute_rsi(prices, period=14):
-    """Compute the Relative Strength Index (RSI)."""
     delta = prices.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
 
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
-    
+
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+#Classify risk using a combination of features (volatility, momentum, moving averages, RSI, etc.).
 def classify_risk(df):
-    """Classify risk using a combination of features (volatility, momentum, moving averages, RSI, etc.)."""
-    
     # Combine features into a single value by normalizing them
-    features = ['Volatility', '50-day MA', '200-day MA', 'Momentum', 'Volume MA', 'RSI']
+    features = ['Volatility', '50-day MA', '200-day MA', 'Momentum', 'Volume MA', 'RSI', 'Beta', 'Sharpe Ratio', 'Drawdown']
     
     # Normalize each feature
     for feature in features:
@@ -52,14 +55,15 @@ def classify_risk(df):
         [df['Risk Score'] <= df['Risk Score'].quantile(0.33), 
          (df['Risk Score'] > df['Risk Score'].quantile(0.33)) & (df['Risk Score'] <= df['Risk Score'].quantile(0.66)),
          df['Risk Score'] > df['Risk Score'].quantile(0.66)],
-        ["Low", "Medium", "High"], 
-        default="Medium"
+        [0, 1, 2], 
+        default=1
     )
     return df
 
+# Train the XGBoost model using the processed data.
 def train_model(df):
-    """Train a RandomForest model to predict risk levels based on multiple features."""
-    features = ['Volatility', '50-day MA', '200-day MA', 'Momentum', 'Volume MA', 'RSI']
+    """Train an XGBoost model to predict risk levels."""
+    features = ['Volatility', '50-day MA', '200-day MA', 'Momentum', 'Volume MA', 'RSI', 'Beta', 'Sharpe Ratio', 'Drawdown']
     X = df[features]
     y = df['Risk Level']
     
@@ -70,12 +74,11 @@ def train_model(df):
     # Split data into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.4, random_state=42)
     
-    # Train RandomForest model
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    # Train XGBoost model
+    model = XGBClassifier(n_estimators=200, learning_rate=0.05, max_depth=6, random_state=42)
     model.fit(X_train, y_train)
     
     print(f"Model Accuracy: {model.score(X_test, y_test) * 100:.2f}%")
-    
     return model, scaler
 
 def process_all_data(data_folder):
@@ -88,7 +91,7 @@ def process_all_data(data_folder):
             file_path = os.path.join(data_folder, file_name)
             print(f"Processing {file_name}...")
             df = load_data(file_path)
-            df = classify_risk(df)  # Classify risk for each stock
+            df = classify_risk(df)
             all_data.append(df)
 
     # Concatenate all data into one DataFrame
